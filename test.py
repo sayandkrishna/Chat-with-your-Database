@@ -281,7 +281,7 @@ def llmcall(user_query: str, all_db_schemas: Dict, conversation_history: Optiona
             system_prompt=system_prompt,
             user_prompt=user_prompt,
             temperature=0.1,  # Slightly higher for creativity
-            max_tokens=300,   # Reduce tokens for faster response
+            max_tokens=1024,   # Reduce tokens for faster response
             retries=2,        # Fewer retries for speed
             timeout=30        # Shorter timeout
         )

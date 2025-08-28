@@ -246,3 +246,4 @@ if not st.session_state.logged_in:
 else:
     display_sidebar()
     display_chat_interface()
+    
