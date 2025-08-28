@@ -39,4 +39,5 @@ class DbConfigRequest(BaseModel):
 class QueryRequest(BaseModel):
     """Model for LLM query requests."""
     user_query: str
+    conversation_id: Optional[int] = None
     conversation_history: Optional[List[Dict[str, Any]]] = None

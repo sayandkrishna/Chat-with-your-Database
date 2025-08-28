@@ -2,6 +2,11 @@ from fastapi import FastAPI, HTTPException, status, Depends
 from typing import List, Dict, Any
 import time
 import psycopg2
+# In api.py
+
+from fastapi.middleware.cors import CORSMiddleware
+
+# Add this right after app = FastAPI(...)
 
 from models import (
     SignupRequest, LoginRequest, DbConfigRequest, QueryRequest
@@ -22,7 +27,17 @@ app = FastAPI(
     description="A smart database query API with semantic caching and intent detection",
     version="1.0.0"
 )
-
+origins = [
+    "http://localhost:5173",
+    "http://127.0.0.1:5173",
+]
+app.add_middleware(
+    CORSMiddleware,
+    allow_origins=["http://localhost:3000"],  # The address of your React app
+    allow_credentials=True,
+    allow_methods=["*"],  # Allows all methods (GET, POST, etc.)
+    allow_headers=["*"],  # Allows all headers
+)
 # --- Startup Event ---
 @app.on_event("startup")
 async def startup_event():

@@ -15,9 +15,12 @@ def setup_database_tables():
         cur = conn.cursor()
         
         # Create users table
+        cur.execute("CREATE EXTENSION IF NOT EXISTS \"uuid-ossp\";")
+
+        # Create users table
         cur.execute("""
             CREATE TABLE IF NOT EXISTS users (
-                id SERIAL PRIMARY KEY,
+                id UUID PRIMARY KEY DEFAULT uuid_generate_v4(),
                 username VARCHAR(50) UNIQUE NOT NULL,
                 password_hash VARCHAR(255) NOT NULL,
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
@@ -28,7 +31,7 @@ def setup_database_tables():
         cur.execute("""
             CREATE TABLE IF NOT EXISTS db_credentials (
                 id SERIAL PRIMARY KEY,
-                user_id INTEGER NOT NULL,
+                user_id UUID NOT NULL,
                 db_name VARCHAR(50) NOT NULL,
                 db_host VARCHAR(255) NOT NULL,
                 db_database VARCHAR(255) NOT NULL,
@@ -38,6 +41,29 @@ def setup_database_tables():
                 created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
                 UNIQUE(user_id, db_name),
                 FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
+        
+        # Create conversations table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS conversations (
+                id SERIAL PRIMARY KEY,
+                user_id UUID NOT NULL,
+                title VARCHAR(255) NOT NULL,
+                created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (user_id) REFERENCES users(id) ON DELETE CASCADE
+            );
+        """)
+        
+        # Create messages table
+        cur.execute("""
+            CREATE TABLE IF NOT EXISTS messages (
+                id SERIAL PRIMARY KEY,
+                conversation_id INTEGER NOT NULL,
+                sender VARCHAR(50) NOT NULL,
+                content TEXT NOT NULL,
+                timestamp TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+                FOREIGN KEY (conversation_id) REFERENCES conversations(id) ON DELETE CASCADE
             );
         """)
         
@@ -155,3 +181,83 @@ def get_all_user_db_schemas(user_id: str) -> Dict:
             cur.close()
             conn.close()
     return all_schemas
+
+def get_conversations_for_user(user_id: str) -> List[Dict]:
+    """Get all conversations for a specific user."""
+    conn = None
+    conversations = []
+    try:
+        conn = get_db_connection(settings.database_config)
+        cur = conn.cursor()
+        cur.execute("SELECT id, title, created_at FROM conversations WHERE user_id = %s ORDER BY created_at DESC", (user_id,))
+        for row in cur.fetchall():
+            conversations.append({
+                "id": row[0],
+                "title": row[1],
+                "created_at": str(row[2])
+            })
+    except psycopg2.Error as e:
+        print(f"Database error while retrieving conversations for user {user_id}: {e}")
+        return []
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+    return conversations
+
+def get_messages_for_conversation(conversation_id: int) -> List[Dict]:
+    """Get all messages for a specific conversation."""
+    conn = None
+    messages = []
+    try:
+        conn = get_db_connection(settings.database_config)
+        cur = conn.cursor()
+        cur.execute("SELECT sender, content, timestamp FROM messages WHERE conversation_id = %s ORDER BY timestamp ASC", (conversation_id,))
+        for row in cur.fetchall():
+            messages.append({
+                "sender": row[0],
+                "content": row[1],
+                "timestamp": str(row[2])
+            })
+    except psycopg2.Error as e:
+        print(f"Database error while retrieving messages for conversation {conversation_id}: {e}")
+        return []
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+    return messages
+
+def create_conversation(user_id: str, title: str) -> int:
+    """Create a new conversation and return its ID."""
+    conn = None
+    try:
+        conn = get_db_connection(settings.database_config)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO conversations (user_id, title) VALUES (%s, %s) RETURNING id", (user_id, title))
+        conversation_id = cur.fetchone()[0]
+        conn.commit()
+        return conversation_id
+    except psycopg2.Error as e:
+        print(f"Database error creating conversation for user {user_id}: {e}")
+        raise
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
+
+def add_message_to_conversation(conversation_id: int, sender: str, content: str):
+    """Add a message to an existing conversation."""
+    conn = None
+    try:
+        conn = get_db_connection(settings.database_config)
+        cur = conn.cursor()
+        cur.execute("INSERT INTO messages (conversation_id, sender, content) VALUES (%s, %s, %s)", (conversation_id, sender, content))
+        conn.commit()
+    except psycopg2.Error as e:
+        print(f"Database error adding message to conversation {conversation_id}: {e}")
+        raise
+    finally:
+        if conn:
+            cur.close()
+            conn.close()
