@@ -156,96 +156,150 @@ def create_enhanced_prompts(user_query: str, all_db_schemas: Dict, conversation_
     # Build conversation context
     context_str, last_db, last_table = build_conversation_context(conversation_history)
     
-    # Enhanced system prompt
-    system_prompt = """You are an expert SQL assistant. Your job is to interpret natural language queries and convert them to structured database operations.
+    # Enhanced system prompt - made more specific to force JSON-only output
+    system_prompt = """You are a JSON-only SQL assistant. Your response must be EXACTLY one JSON object, nothing else.
 
-RULES:
-1. Always output valid JSON only
-2. For data queries: {"db": "database_name", "table": "table_name", "query": "SELECT ..."}
-3. For listing tables: {"db": "database_name", "action": "list_tables"}
-4. If unsure: {}
+VALID RESPONSES:
+{"db": "database_name", "table": "table_name", "query": "SELECT ..."}
+{"db": "database_name", "action": "list_tables"}
+{}
 
-GUIDELINES:
-- Use LIMIT clause for SELECT queries (default 100 rows)
-- Prefer exact table name matches
-- Use context from previous queries when database/table not specified
-- Keep SQL simple and safe (SELECT only, no DROP/DELETE)
-- Match user's intent even if they use approximate table names
-- For string comparisons in WHERE clauses, use ILIKE for case-insensitive matching (e.g., `WHERE name ILIKE 'iphone%'`)."""
+STRICT RULES:
+- Response must start with { and end with }
+- NO text before or after the JSON
+- NO explanations, analysis, or reasoning
+- NO words like "analysis", "final", "assistant", "response"
+- If schema lacks column details, make reasonable assumptions (name, title, etc.)
+- Use ILIKE for case-insensitive string matching
+- Add LIMIT 100 to SELECT queries"""
 
     # Build memory instructions
     memory_hint = ""
     if last_db or last_table:
         memory_hint = f"\nCONTEXT: Previous query used database='{last_db}', table='{last_table}'. Reuse if current query doesn't specify them."
     
-    # Enhanced user prompt
-    user_prompt = f"""DATABASE SCHEMA:
+    # Enhanced user prompt - more direct
+    user_prompt = f"""SCHEMA:
 {schema_info}
 
 {context_str}
 {memory_hint}
 
-USER QUERY: "{user_query}"
+QUERY: "{user_query}"
 
-Think step by step:
-1. What is the user asking for?
-2. Which database and table are relevant?
-3. What SQL query or action is needed?
-
-JSON OUTPUT:"""
+RESPOND WITH JSON ONLY:"""
 
     return system_prompt, user_prompt
 
 
 def validate_and_clean_response(raw_response: str) -> Dict[str, Any]:
-    """Extract and validate JSON from LLM response."""
+    """Extract and validate JSON from LLM response with improved parsing."""
     try:
-        # Try to find JSON in the response
-        json_match = re.search(r'\{.*\}', raw_response, re.DOTALL)
-        if not json_match:
-            print(f"No JSON found in response: {raw_response}")
-            return {}
+        print(f"Cleaning raw response: {raw_response[:200]}...")
         
-        # Parse JSON
-        parsed = json.loads(json_match.group(0))
+        # Strategy 1: Find standalone {} (empty JSON object)
+        if '{}' in raw_response:
+            # Extract just the {} part
+            empty_json_match = re.search(r'\{\s*\}', raw_response)
+            if empty_json_match:
+                try:
+                    parsed = json.loads('{}')
+                    print(f"✅ Found valid empty JSON: {parsed}")
+                    return parsed
+                except:
+                    pass
         
-        # Validate structure
-        if not parsed:
-            return {}
-        
-        # Validate list_tables action
-        if parsed.get("action") == "list_tables":
-            if "db" not in parsed:
-                print("Missing 'db' key for list_tables action")
-                return {}
-            return parsed
-        
-        # Validate query action
-        if "query" in parsed:
-            required_keys = ["db", "table", "query"]
-            missing_keys = [key for key in required_keys if key not in parsed]
-            if missing_keys:
-                print(f"Missing keys for query: {missing_keys}")
-                return {}
+        # Strategy 2: Extract JSON between first { and first } (for simple cases)
+        first_brace = raw_response.find('{')
+        if first_brace != -1:
+            # Find the matching closing brace
+            brace_count = 0
+            end_pos = first_brace
             
-            # Basic SQL safety check
-            query = parsed["query"].upper()
-            dangerous_keywords = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE"]
-            if any(keyword in query for keyword in dangerous_keywords):
-                print(f"Potentially dangerous SQL detected: {parsed['query']}")
-                return {}
+            for i, char in enumerate(raw_response[first_brace:], first_brace):
+                if char == '{':
+                    brace_count += 1
+                elif char == '}':
+                    brace_count -= 1
+                    if brace_count == 0:
+                        end_pos = i
+                        break
             
-            return parsed
+            if brace_count == 0:  # Found matching braces
+                potential_json = raw_response[first_brace:end_pos + 1]
+                try:
+                    # Clean up the candidate
+                    potential_json = potential_json.strip()
+                    potential_json = re.sub(r'[\x00-\x1f\x7f-\x9f]', '', potential_json)  # Remove control chars
+                    
+                    print(f"Trying to parse extracted JSON: {potential_json}")
+                    parsed = json.loads(potential_json)
+                    
+                    # Validate structure
+                    if parsed == {}:
+                        print(f"✅ Valid empty JSON response: {parsed}")
+                        return parsed
+                    elif parsed.get("action") == "list_tables":
+                        if "db" not in parsed:
+                            print("Missing 'db' key for list_tables action")
+                        else:
+                            print(f"✅ Valid list_tables response: {parsed}")
+                            return parsed
+                    elif "query" in parsed:
+                        required_keys = ["db", "table", "query"]
+                        missing_keys = [key for key in required_keys if key not in parsed]
+                        if missing_keys:
+                            print(f"Missing keys for query: {missing_keys}")
+                        else:
+                            # Basic SQL safety check
+                            query = parsed["query"].upper()
+                            dangerous_keywords = ["DROP", "DELETE", "UPDATE", "INSERT", "ALTER", "CREATE", "TRUNCATE"]
+                            if any(keyword in query for keyword in dangerous_keywords):
+                                print(f"Potentially dangerous SQL detected: {parsed['query']}")
+                            else:
+                                print(f"✅ Valid query response: {parsed}")
+                                return parsed
+                    else:
+                        print(f"✅ Valid JSON (unknown structure): {parsed}")
+                        return parsed
+                        
+                except json.JSONDecodeError as e:
+                    print(f"JSON decode error: {e}")
+                except Exception as e:
+                    print(f"Error parsing JSON: {e}")
         
-        # If we get here, the structure is unclear
-        print(f"Unclear response structure: {parsed}")
+        # Strategy 3: Multiple regex patterns as fallback
+        json_patterns = [
+            r'\{\s*\}',  # Empty object
+            r'\{[^{}]*\}',  # Simple object without nested braces
+            r'\{.*?\}',  # Non-greedy match
+        ]
+        
+        for pattern in json_patterns:
+            matches = re.findall(pattern, raw_response, re.DOTALL)
+            for match in matches:
+                try:
+                    match = match.strip()
+                    if not match:
+                        continue
+                    
+                    print(f"Trying regex pattern match: {match}")
+                    parsed = json.loads(match)
+                    print(f"✅ Successfully parsed with regex: {parsed}")
+                    return parsed
+                    
+                except json.JSONDecodeError:
+                    continue
+                except Exception as e:
+                    print(f"Error with regex match: {e}")
+                    continue
+        
+        # If all strategies failed
+        print("❌ All JSON extraction strategies failed")
         return {}
         
-    except json.JSONDecodeError as e:
-        print(f"JSON decode error: {e}")
-        return {}
     except Exception as e:
-        print(f"Error validating response: {e}")
+        print(f"❌ Error in validate_and_clean_response: {e}")
         return {}
 
 
@@ -280,10 +334,10 @@ def llmcall(user_query: str, all_db_schemas: Dict, conversation_history: Optiona
         raw_response = call_llm(
             system_prompt=system_prompt,
             user_prompt=user_prompt,
-            temperature=0.1,  # Slightly higher for creativity
-            max_tokens=1024,   # Reduce tokens for faster response
-            retries=2,        # Fewer retries for speed
-            timeout=30        # Shorter timeout
+            temperature=0.0,   # Set to 0 for more consistent responses
+            max_tokens=500,    # Reduce tokens since we only want JSON
+            retries=2,         # Fewer retries for speed
+            timeout=30         # Shorter timeout
         )
         
         # Extract text response
@@ -306,13 +360,3 @@ def llmcall(user_query: str, all_db_schemas: Dict, conversation_history: Optiona
     except Exception as e:
         print(f"Unexpected error in llmcall: {e}")
         return "{}"
-
-
-# --- Additional Helper Functions ---
-
-
-
-
-# if __name__ == "__main__":
-#     # Run tests if script is executed directly
-#     test_llm_with_sample_queries()

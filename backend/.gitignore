@@ -1,10 +1,17 @@
+# Virtual Environments
 venv/
 .venv
+
+# Environment variables
+*.env
 .env
-/__pycache__/
+
+# Python cache
+__pycache__/
 *.pyc
 
-/.vscode
-.env
-*.env
+# VSCode editor settings
+.vscode/
+
+# Other
 sample.txt
